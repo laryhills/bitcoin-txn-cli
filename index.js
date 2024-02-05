@@ -3,6 +3,7 @@ const {
   networks,
   script,
   payments,
+  opcodes,
   initEccLib,
   Transaction,
   Psbt,
@@ -16,6 +17,7 @@ const axios = require("axios");
 initEccLib(ecc);
 const ECPair = ECPairFactory(ecc);
 const network = networks.testnet; // Otherwise, bitcoin = mainnet and regnet = local
+const crypto_ = require("crypto");
 
 const API_URL =
   network === networks.testnet
@@ -38,6 +40,11 @@ async function main() {
         choices: [
           "Show Transaction Details From Hex",
           "Evaluate Bitcoin Script From Hex",
+          "Get Byte Encoding of a String",
+          "Get Redeem Script from Pre-Image",
+          "Derive a Address from a Redeem Script",
+          "Construct a Transaction That Sends to the Address",
+          "Construct a Transaction That Spends From the Address",
         ],
       },
     ]);
@@ -49,6 +56,21 @@ async function main() {
         break;
       case "Evaluate Bitcoin Script From Hex":
         evaluateBitcoinScript();
+        break;
+      case "Get Byte Encoding of a String":
+        getByteEncoding();
+        break;
+      case "Get Redeem Script from Pre-Image":
+        getRedeemScript();
+        break;
+      case "Derive a Address from a Redeem Script":
+        deriveAddressFromRedeemScript();
+        break;
+      case "Construct a Transaction That Sends to the Address":
+        constructTransactionThatSendsToAddress();
+        break;
+      case "Construct a Transaction That Spends From the Address":
+        constructTransactionThatSpendsFromAddress();
         break;
       default:
         throw new Error("Invalid action");
@@ -155,6 +177,73 @@ async function showTransactionDetails() {
     transaction.locktime.toString(16).padStart(8, "0"),
     "............................ Locktime"
   ); */
+}
+
+async function evaluateBitcoinScript() {}
+
+async function getByteEncoding() {
+  const { stringToEncode } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "stringToEncode",
+      message: "Enter the string to encode:\n",
+      validate: (value) => {
+        // Validate as a non empty string
+        const isValid = value.length > 0;
+        return isValid || "Please enter a valid string.";
+      },
+    },
+  ]);
+  console.log(
+    "Encoding___",
+    Buffer.from(stringToEncode, "utf8").toString("hex")
+  );
+}
+
+async function getRedeemScript() {
+  const { preImage } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "preImage",
+      message: "Enter the pre-image:\n",
+      validate: (value) => {
+        // Validate as a valid hex string
+        const isValid = /^[0-9a-fA-F]+$/.test(value);
+        return isValid || "Please enter a valid pre-image hex.";
+      },
+    },
+  ]);
+
+  const hash = crypto_
+    .createHash("sha256")
+    .update(Buffer.from(preImage, "hex"))
+    .digest();
+  const redeemScript = script.compile([
+    opcodes.OP_SHA256,
+    hash,
+    opcodes.OP_EQUAL,
+  ]);
+  console.log("Redeem Script:", redeemScript.toString("hex"));
+}
+
+async function deriveAddressFromRedeemScript() {
+  const { redeemScript } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "redeemScript",
+      message: "Enter the redeem script:\n",
+      validate: (value) => {
+        // Validate as a valid hex string
+        const isValid = /^[0-9a-fA-F]+$/.test(value);
+        return isValid || "Please enter a valid redeem script hex.";
+      },
+    },
+  ]);
+
+  const p2sh = payments.p2sh({
+    redeem: { output: Buffer.from(redeemScript, "hex") },
+  });
+  console.log("Address:", p2sh.address);
 }
 
 main();
