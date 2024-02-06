@@ -293,45 +293,6 @@ async function constructTransactionThatSendsToScriptAddress() {
 
   const psbt = new Psbt({ network });
 
-  let totalInputValue = 0;
-  for (const utxo of utxos) {
-    const rawTransaction = await getRawTransaction(utxo.transaction_hash);
-
-    psbt.addInput({
-      hash: utxo.transaction_hash,
-      index: utxo.index,
-      nonWitnessUtxo: rawTransaction,
-    });
-
-    totalInputValue += utxo.value;
-  }
-
-  console.log("Calculating fee...");
-  // Estimate the transaction size in bytes
-  let estimatedSize =
-    psbt.data.inputs.length * 180 + psbt.data.outputs.length * 34 + 10;
-
-  // Calculate the miner's fee
-  let minerFee = estimatedSize * feeRate;
-  console.log("Fee:", minerFee, "satoshis");
-
-  // check if balance is sufficient
-  if (walletBalance < amount * 100000000 + minerFee) {
-    console.error("Insufficient balance");
-    return;
-  }
-
-  const amountToSpend = amount * 100000000 - minerFee;
-
-  if (amountToSpend === 0) {
-    console.error("Amount to spend is 0");
-    return;
-  }
-
-  if (totalInputValue < amount * 100000000 + minerFee) {
-    console.error("Insufficient balance");
-    return;
-  }
   psbt.addInput({
     hash: txid,
     index: vout,
