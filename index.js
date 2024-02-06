@@ -66,12 +66,12 @@ async function main() {
       case "Derive a Address from a Redeem Script":
         deriveAddressFromRedeemScript();
         break;
-      case "Construct a Transaction That Sends to the Address":
+      case "Construct a Transaction That Sends to the Script Address":
         constructTransactionThatSendsToScriptAddress();
         break;
-      // case "Construct a Transaction That Spends From the Address":
-      //   constructTransactionThatSpendsFromAddress();
-      //   break;
+      case "Construct a Transaction That Spends From the Address":
+        constructTransactionThatSpendsFromScriptAddress();
+        break;
       default:
         throw new Error("Invalid action");
     }
@@ -242,11 +242,12 @@ async function deriveAddressFromRedeemScript() {
 
   const p2sh = payments.p2sh({
     redeem: { output: Buffer.from(redeemScript, "hex") },
+    network,
   });
   console.log("Script Address:", p2sh.address);
 }
 
-async function constructTransactionThatSendsToScriptAddress() {
+async function constructTransactionThatSpendsFromScriptAddress() {
   const { amountToSend, scriptAddress } = await inquirer.prompt([
     {
       type: "input",
@@ -263,9 +264,12 @@ async function constructTransactionThatSendsToScriptAddress() {
       name: "scriptAddress",
       message: "Enter the script address:\n",
       validate: (value) => {
-        // Validate as a valid bitcoin address
-        const isValid = payments.p2sh({ address: value, network });
-        return isValid || "Please enter a valid script address.";
+        try {
+          payments.p2sh({ address: value, network });
+          return true;
+        } catch (error) {
+          return "Please enter a valid script address.";
+        }
       },
     },
   ]);
@@ -286,7 +290,7 @@ async function constructTransactionThatSendsToScriptAddress() {
 
   const keyPair = ECPair.fromPrivateKey(Buffer.from(privateKey, "hex"));
   const p2sh = payments.p2sh({ address: scriptAddress, network });
-  const p2wpkh = payments.p2wpkh({
+  const p2pkh = payments.p2pkh({
     pubkey: keyPair.publicKey,
     network,
   });
@@ -303,13 +307,156 @@ async function constructTransactionThatSendsToScriptAddress() {
     redeemScript: p2sh.redeem.output,
   });
   psbt.addOutput({
-    address: p2wpkh.address,
+    address: p2pkh.address,
     value: amountToSend - feeRate * 2,
   });
   psbt.signInput(0, keyPair);
   psbt.validateSignaturesOfInput(0);
   psbt.finalizeAllInputs();
   console.log("Transaction Hex:", psbt.extractTransaction().toHex());
+}
+
+async function constructTransactionThatSendsToScriptAddress() {
+  const { amount, scriptAddress } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "amount",
+      message: "Enter the amount to send (in satoshis):\n",
+      validate: (value) => {
+        // Validate as a number
+        const isValid = !isNaN(value);
+        return isValid || "Please enter a valid number.";
+      },
+    },
+    {
+      type: "input",
+      name: "scriptAddress",
+      message: "Enter the script address:\n",
+      validate: (value) => {
+        try {
+          payments.p2sh({ address: value, network });
+          return true;
+        } catch (error) {
+          return "Please enter a valid script address.";
+        }
+      },
+    },
+  ]);
+
+  const { privateKey, walletAddress } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "privateKey",
+      message: "Enter the private key of the paying address (P2PKH):\n",
+      validate: (value) => {
+        try {
+          ECPair.fromWIF(value);
+          return true;
+        } catch (error) {
+          return "Please enter a valid private key.";
+        }
+      },
+    },
+    {
+      type: "input",
+      name: "walletAddress",
+      message: "Enter the wallet address (P2PKH):\n",
+      validate: (value) => {
+        try {
+          payments.p2pkh({ address: value, network });
+          return true;
+        } catch (error) {
+          return "Please enter a valid wallet address.";
+        }
+      },
+    },
+  ]);
+
+  const formatedAmount = parseFloat(amount);
+
+  const keyPair = ECPair.fromWIF(privateKey);
+  const p2sh = payments.p2sh({ address: scriptAddress, network });
+  const p2wpkh = payments.p2wpkh({
+    pubkey: keyPair.publicKey,
+    network,
+  });
+
+  const walletData = await getAddressInfo(walletAddress);
+  utxos = walletData.utxos;
+  walletBalance = walletData.balance;
+
+  const psbt = new Psbt({ network });
+
+  let totalInputValue = 0;
+  for (const utxo of utxos) {
+    const rawTransaction = await getRawTransaction(utxo.transaction_hash);
+
+    psbt.addInput({
+      hash: utxo.transaction_hash,
+      index: utxo.index,
+      nonWitnessUtxo: rawTransaction,
+    });
+
+    totalInputValue += utxo.value;
+  }
+
+  console.log("Calculating fee...", "Wallet Balance:", walletBalance);
+  // Estimate the transaction size in bytes
+  let estimatedSize =
+    psbt.data.inputs.length * 180 + psbt.data.outputs.length * 34 + 10;
+
+  // Calculate the miner's fee
+  let minerFee = estimatedSize * feeRate;
+  console.log("Fee:", minerFee, "satoshis");
+
+  // check if balance is sufficient
+  if (walletBalance < formatedAmount * 100000000 + minerFee) {
+    console.error("Insufficient balance");
+    return;
+  }
+
+  const amountToSpend = formatedAmount * 100000000 - minerFee;
+
+  if (amountToSpend === 0) {
+    console.error("Amount to spend is 0");
+    return;
+  }
+
+  if (totalInputValue < formatedAmount * 100000000 + minerFee) {
+    console.error("Insufficient balance");
+    return;
+  }
+
+  psbt.addOutput({
+    address: p2sh.address,
+    value: amountToSpend,
+  });
+
+  // Calculate the remaining balance after sending the amount and paying the fee
+  const remainingBalance = totalInputValue - (amountToSpend + minerFee);
+
+  // Add another output that sends the remaining balance back to the original wallet
+  if (remainingBalance > 0) {
+    psbt.addOutput({
+      address: walletAddress,
+      value: remainingBalance,
+    });
+  }
+
+  console.info("\nSigning transaction...");
+  for (let i = 0; i < utxos.length; i++) {
+    psbt.signInput(i, keyPair); // Sign each input with the private key
+  }
+
+  console.info("\nFinalizing transaction...");
+  for (let i = 0; i < utxos.length; i++) {
+    psbt.finalizeInput(i); // Finalize each input
+  }
+
+  // Extract the raw transaction hex
+  const txHex = psbt.extractTransaction().toHex();
+
+  console.info("\nTransaction Hex: ", txHex);
 }
 
 async function getUtxo(scriptAddress) {
@@ -323,6 +470,38 @@ async function getUtxo(scriptAddress) {
 
   const { txid, vout } = utxos[0];
   return { txid, vout };
+}
+
+// Add the getAddressUtxo function
+async function getAddressInfo(address) {
+  const apiUrl = `${API_URL}/dashboards/address/${address}?limit=1`;
+
+  try {
+    const response = await axios.get(apiUrl);
+    const utxos = response.data.data[address].utxo;
+    const walletBalance = response.data.data[address].address.balance;
+    return {
+      utxos, // Unspent transaction outputs
+      balance: walletBalance, // Wallet balance
+    };
+  } catch (error) {
+    throw new Error(
+      `Error retrieving UTXO for address ${address}: ${error.message}`
+    );
+  }
+}
+
+// Fetch the raw transaction data
+async function getRawTransaction(txid) {
+  try {
+    const response = await axios.get(`${API_URL}/raw/transaction/${txid}`);
+    const rawTransaction = response.data.data[txid].raw_transaction;
+    return Buffer.from(rawTransaction, "hex");
+  } catch (error) {
+    throw new Error(
+      `Error retrieving raw transaction ${txid}: ${error.message}`
+    );
+  }
 }
 
 main();
