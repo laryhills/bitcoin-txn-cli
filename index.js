@@ -311,4 +311,18 @@ async function constructTransactionThatSendsToScriptAddress() {
   psbt.finalizeAllInputs();
   console.log("Transaction Hex:", psbt.extractTransaction().toHex());
 }
+
+async function getUtxo(scriptAddress) {
+  if (utxos.length === 0) {
+    const { data } = await axios.get(
+      `${API_URL}/dashboards/address/${scriptAddress}?limit=1`
+    );
+    walletBalance = data.data[scriptAddress].address.balance;
+    utxos = data.data[scriptAddress].utxo;
+  }
+
+  const { txid, vout } = utxos[0];
+  return { txid, vout };
+}
+
 main();
